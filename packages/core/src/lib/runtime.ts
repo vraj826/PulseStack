@@ -1,0 +1,212 @@
+import type { ExecutionRequest, ExecutionSnapshot, TraceSpan, WorkflowStep } from '@pulsestack/contracts';
+import { executionRequestSchema, executionSnapshotSchema, traceSpanSchema } from '@pulsestack/contracts';
+import { createEvent, publishEvent } from './events.js';
+import { createId } from './ids.js';
+import type { PulseInfra } from './infra.js';
+
+type StepResult = {
+  stepId: string;
+  output: Record<string, unknown>;
+  costUsd: number;
+  tokens: number;
+};
+
+export class WorkflowRuntime {
+  constructor(private readonly infra: PulseInfra, private readonly source = 'pulse-runtime') {}
+
+  async execute(requestInput: ExecutionRequest) {
+    const request = executionRequestSchema.parse(requestInput);
+    const executionId = createId('exec');
+    const traceId = createId('trace');
+    await this.infra.persistWorkflow(request.workflow);
+    await this.infra.createExecution({
+      executionId,
+      workflowId: request.workflow.id,
+      tenantId: request.workflow.tenantId,
+      correlationId: request.workflow.correlationId,
+      input: request.input,
+    });
+
+    await publishEvent(
+      this.infra,
+      createEvent({
+        type: 'workflow.started',
+        source: this.source,
+        tenantId: request.workflow.tenantId,
+        correlationId: request.workflow.correlationId,
+        workflowId: request.workflow.id,
+        executionId,
+        payload: { workflow: request.workflow.name, initiatedBy: request.initiatedBy },
+      }),
+    );
+
+    const state: Record<string, unknown> = { ...request.input };
+    const results: StepResult[] = [];
+
+    for (const [index, step] of request.workflow.steps.entries()) {
+      const span = await this.startSpan({
+        traceId,
+        executionId,
+        workflowId: request.workflow.id,
+        step,
+        state,
+      });
+
+      const result = await this.runStep(step, state, request.workflow.correlationId);
+      Object.assign(state, { [step.id]: result.output });
+      results.push(result);
+
+      await this.snapshot({
+        id: createId('snap'),
+        executionId,
+        workflowId: request.workflow.id,
+        sequence: index,
+        state: structuredClone(state),
+        sideEffects: [
+          {
+            type: step.kind,
+            key: step.id,
+            response: result.output,
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      });
+
+      await this.finishSpan(span, result);
+    }
+
+    const output = {
+      steps: results,
+      totalCostUsd: results.reduce((sum, item) => sum + item.costUsd, 0),
+      totalTokens: results.reduce((sum, item) => sum + item.tokens, 0),
+      finalState: state,
+    };
+
+    await this.infra.completeExecution(executionId, 'completed', output);
+    await publishEvent(
+      this.infra,
+      createEvent({
+        type: 'workflow.completed',
+        source: this.source,
+        tenantId: request.workflow.tenantId,
+        correlationId: request.workflow.correlationId,
+        workflowId: request.workflow.id,
+        executionId,
+        payload: output,
+      }),
+    );
+
+    return { executionId, traceId, output };
+  }
+
+  private async runStep(step: WorkflowStep, state: Record<string, unknown>, correlationId: string): Promise<StepResult> {
+    const timestamp = new Date().toISOString();
+    if (step.kind === 'tool') {
+      await publishEvent(
+        this.infra,
+        createEvent({
+          type: 'tool.called',
+          source: this.source,
+          tenantId: 'local',
+          correlationId,
+          payload: { stepId: step.id, tool: step.name, input: step.input, state },
+        }),
+      );
+    }
+    if (step.kind === 'llm') {
+      await publishEvent(
+        this.infra,
+        createEvent({
+          type: 'llm.requested',
+          source: this.source,
+          tenantId: 'local',
+          correlationId,
+          payload: { stepId: step.id, model: step.input.model ?? 'generic', prompt: step.input.prompt ?? '' },
+        }),
+      );
+    }
+
+    const base = {
+      timestamp,
+      receivedStateKeys: Object.keys(state),
+      config: step.input,
+    };
+    const output =
+      step.kind === 'llm'
+        ? {
+            ...base,
+            text: `synthetic completion for ${step.name}`,
+            tokens: 350 + step.name.length,
+          }
+        : step.kind === 'tool'
+          ? {
+              ...base,
+              status: 'ok',
+              result: { echoed: step.input, checksum: `${step.id}:${Object.keys(state).length}` },
+            }
+          : {
+              ...base,
+              status: 'processed',
+            };
+    const tokens = step.kind === 'llm' && 'tokens' in output ? Number(output.tokens) : 0;
+
+    return {
+      stepId: step.id,
+      output,
+      costUsd: step.kind === 'llm' ? 0.014 : 0.002,
+      tokens,
+    };
+  }
+
+  private async startSpan(args: {
+    traceId: string;
+    executionId: string;
+    workflowId: string;
+    step: WorkflowStep;
+    state: Record<string, unknown>;
+  }) {
+    const span = traceSpanSchema.parse({
+      spanId: createId('span'),
+      parentSpanId: null,
+      traceId: args.traceId,
+      executionId: args.executionId,
+      workflowId: args.workflowId,
+      name: args.step.name,
+      kind: args.step.kind,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      attributes: { dependsOn: args.step.dependsOn, stateKeys: Object.keys(args.state) },
+      error: null,
+    });
+    await this.infra.writeSpan(span);
+    await publishEvent(
+      this.infra,
+      createEvent({
+        type: 'span.recorded',
+        source: this.source,
+        tenantId: 'local',
+        correlationId: args.traceId,
+        workflowId: args.workflowId,
+        executionId: args.executionId,
+        spanId: span.spanId,
+        payload: span.attributes,
+      }),
+    );
+    return span;
+  }
+
+  private async finishSpan(span: TraceSpan, result: StepResult) {
+    await this.infra.writeSpan({
+      ...span,
+      status: 'ok',
+      endedAt: new Date().toISOString(),
+      attributes: { ...span.attributes, stepId: result.stepId, costUsd: result.costUsd, tokens: result.tokens },
+    });
+  }
+
+  private async snapshot(snapshotInput: ExecutionSnapshot) {
+    const snapshot = executionSnapshotSchema.parse(snapshotInput);
+    await this.infra.writeSnapshot(snapshot);
+  }
+}

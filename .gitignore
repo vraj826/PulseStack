@@ -1,0 +1,9 @@
+node_modules
+.turbo
+dist
+build
+coverage
+.env
+.env.local
+*.log
+_tmp_*

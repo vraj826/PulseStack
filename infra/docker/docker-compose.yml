@@ -1,0 +1,40 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pulsestack
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ../postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - '6379:6379'
+
+  nats:
+    image: nats:2.11-alpine
+    ports:
+      - '4222:4222'
+      - '8222:8222'
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.4
+    ports:
+      - '8123:8123'
+      - '9000:9000'
+    environment:
+      CLICKHOUSE_DB: pulsestack
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../clickhouse-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+
+volumes:
+  pg-data:
+  clickhouse-data:

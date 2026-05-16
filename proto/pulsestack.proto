@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package pulsestack.runtime;
+
+service Runtime {
+  rpc GetExecution (GetExecutionRequest) returns (ExecutionReply);
+}
+
+message GetExecutionRequest {
+  string execution_id = 1;
+}
+
+message ExecutionReply {
+  string execution_id = 1;
+  string workflow_id = 2;
+  string status = 3;
+  string correlation_id = 4;
+}
