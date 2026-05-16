@@ -1,0 +1,13 @@
+image:
+  repository: ghcr.io/pulsestack/pulse-gateway
+  tag: latest
+
+service:
+  port: 80
+
+env:
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/pulsestack
+  REDIS_URL: redis://redis:6379
+  CLICKHOUSE_URL: http://clickhouse:8123
+  NATS_URL: nats://nats:4222
+  JWT_SECRET: pulsestack-change-me

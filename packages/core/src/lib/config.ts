@@ -1,0 +1,28 @@
+import { z } from 'zod';
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  LOG_LEVEL: z.string().default('info'),
+  SERVICE_NAME: z.string().default('pulsestack'),
+  HTTP_PORT: z.coerce.number().default(3000),
+  WS_PORT: z.coerce.number().default(3001),
+  GRPC_PORT: z.coerce.number().default(50051),
+  DATABASE_URL: z.string().default('postgres://postgres:postgres@localhost:5432/pulsestack'),
+  REDIS_URL: z.string().default('redis://localhost:6379'),
+  CLICKHOUSE_URL: z.string().default('http://localhost:8123'),
+  CLICKHOUSE_USER: z.string().default('default'),
+  CLICKHOUSE_PASSWORD: z.string().default(''),
+  NATS_URL: z.string().default('nats://localhost:4222'),
+  JWT_SECRET: z.string().default('pulsestack-dev-secret'),
+  API_KEY_SALT: z.string().default('pulsestack-api-salt'),
+  API_KEY: z.string().default('pulsestack-local-api-key'),
+  TENANT_ID: z.string().default('local'),
+  PLUGIN_DIR: z.string().default('./plugins'),
+  AUTH_DISABLED: z.coerce.boolean().default(true),
+});
+
+export type PulseEnv = z.infer<typeof envSchema>;
+
+export function loadEnv(overrides: NodeJS.ProcessEnv = process.env): PulseEnv {
+  return envSchema.parse(overrides);
+}

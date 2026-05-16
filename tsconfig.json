@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/contracts" },
+    { "path": "./packages/core" },
+    { "path": "./packages/sdk" },
+    { "path": "./packages/plugin-sdk" },
+    { "path": "./packages/ui" },
+    { "path": "./apps/pulse-runtime" },
+    { "path": "./apps/pulse-events" },
+    { "path": "./apps/pulse-trace" },
+    { "path": "./apps/pulse-replay" },
+    { "path": "./apps/pulse-metrics" },
+    { "path": "./apps/pulse-graph" },
+    { "path": "./apps/pulse-gateway" },
+    { "path": "./apps/pulse-web" }
+  ]
+}

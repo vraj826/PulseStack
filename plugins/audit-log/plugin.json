@@ -1,0 +1,6 @@
+{
+  "name": "audit-log",
+  "version": "0.1.0",
+  "entrypoint": "index.mjs",
+  "capabilities": ["event-handler"]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@pulsestack/pulse-events",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+  ,
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@pulsestack/core": "workspace:*",
+    "@pulsestack/contracts": "workspace:*",
+    "fastify": "^5.6.0",
+    "ws": "^8.18.3"
+  }
+}
