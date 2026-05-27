@@ -1,7 +1,6 @@
 import { eventEnvelopeSchema, type EventEnvelope, type EventType } from '@pulsestack/contracts';
 import { createId } from './ids.js';
 import type { PulseInfra } from './infra.js';
-import { dispatchEventToPlugins, type PulsePluginModule } from './plugins.js';
 
 export function createEvent(input: {
   type: EventType;
@@ -32,15 +31,6 @@ export function createEvent(input: {
   });
 }
 
-export async function publishEvent(
-  infra: PulseInfra,
-  event: EventEnvelope,
-  options: { plugins?: PulsePluginModule[]; service?: string } = {},
-) {
+export async function publishEvent(infra: PulseInfra, event: EventEnvelope) {
   await infra.writeEvent(event);
-  if (options.plugins?.length) {
-    await dispatchEventToPlugins(options.plugins, event, {
-      service: options.service ?? event.source,
-    });
-  }
 }

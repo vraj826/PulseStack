@@ -1,4 +1,4 @@
-import { createBaseServer, loadEnv, loadPlugins, PulseInfra, WorkflowRuntime } from '@pulsestack/core';
+import { createBaseServer, loadEnv, PulseInfra, WorkflowRuntime } from '@pulsestack/core';
 import {
   loadPackageDefinition,
   Server,
@@ -14,8 +14,7 @@ import path from 'node:path';
 
 const env = loadEnv();
 const infra = new PulseInfra();
-const plugins = await loadPlugins();
-const runtime = new WorkflowRuntime(infra, 'pulse-runtime', plugins);
+const runtime = new WorkflowRuntime(infra);
 const app = await createBaseServer('pulse-runtime');
 
 type RuntimeExecutionRequest = {
