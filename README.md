@@ -169,6 +169,9 @@ proto/
   pulsestack.proto
 ```
 
+For a deeper contributor-oriented view of the runtime internals, see
+[PulseStack Distributed Runtime Architecture](docs/architecture/distributed-runtime.md).
+
 ---
 
 # Tech Stack
