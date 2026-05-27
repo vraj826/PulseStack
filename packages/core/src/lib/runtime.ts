@@ -13,6 +13,7 @@ import {
 import { createEvent, publishEvent } from './events.js';
 import { createId } from './ids.js';
 import type { PulseInfra } from './infra.js';
+import { activeTraceId, spanId, withRuntimeSpan } from './tracing.js';
 import { validateWorkflowDag } from './workflow-validation.js';
 
 const defaultRetryPolicy: RetryPolicy = {
@@ -50,134 +51,204 @@ export class WorkflowRuntime {
     const request = executionRequestSchema.parse(requestInput);
     validateWorkflowDag(request.workflow);
     const executionId = createId('exec');
-    const traceId = createId('trace');
-    await this.infra.persistWorkflow(request.workflow);
-    await this.infra.createExecution({
-      executionId,
-      workflowId: request.workflow.id,
-      tenantId: request.workflow.tenantId,
-      correlationId: request.workflow.correlationId,
-      input: request.input,
-    });
 
-    await publishEvent(
-      this.infra,
-      createEvent({
-        type: 'workflow.started',
-        source: this.source,
-        tenantId: request.workflow.tenantId,
-        correlationId: request.workflow.correlationId,
-        workflowId: request.workflow.id,
-        executionId,
-        payload: {
-          workflow: request.workflow.name,
-          initiatedBy: request.initiatedBy,
+    return withRuntimeSpan(
+      'workflow.execute',
+      {
+        attributes: {
+          'pulsestack.execution.id': executionId,
+          'pulsestack.workflow.id': request.workflow.id,
+          'pulsestack.workflow.name': request.workflow.name,
+          'pulsestack.workflow.version': request.workflow.version,
+          'pulsestack.tenant.id': request.workflow.tenantId,
+          'pulsestack.correlation.id': request.workflow.correlationId,
+          'pulsestack.workflow.step_count': request.workflow.steps.length,
+          'pulsestack.initiated_by': request.initiatedBy,
         },
-      }),
-    );
-
-    const state: Record<string, unknown> = { ...request.input };
-    const retryState: Record<string, unknown> = {};
-    const results: StepResult[] = [];
-
-    try {
-      for (const [index, step] of request.workflow.steps.entries()) {
-        const span = await this.startSpan({
-          traceId,
+      },
+      async (workflowSpan) => {
+        const traceId = activeTraceId(createId('trace'));
+        const workflowSpanId = spanId(workflowSpan);
+        await this.infra.persistWorkflow(request.workflow);
+        await this.infra.createExecution({
           executionId,
           workflowId: request.workflow.id,
-          step,
-          state,
-        });
-
-        let result: StepResult;
-        try {
-          result = await this.runStepWithRetry({
-            step,
-            state,
-            traceId,
-            executionId,
-            workflowId: request.workflow.id,
-            tenantId: request.workflow.tenantId,
-            correlationId: request.workflow.correlationId,
-            spanId: span.spanId,
-          });
-        } catch (error) {
-          if (error instanceof StepRetryExhaustedError) {
-            retryState[error.stepId] = error.retry;
-            Object.assign(state, { __retry: retryState });
-          }
-          await this.failSpan(span, error);
-          throw error;
-        }
-        retryState[step.id] = result.retry;
-        Object.assign(state, { [step.id]: result.output, __retry: retryState });
-        results.push(result);
-
-        await this.snapshot({
-          id: createId('snap'),
-          executionId,
-          workflowId: request.workflow.id,
-          sequence: index,
-          state: structuredClone(state),
-          sideEffects: [
-            {
-              type: step.kind,
-              key: step.id,
-              response: result.output,
-            },
-          ],
-          createdAt: new Date().toISOString(),
-        });
-
-        await this.finishSpan(span, result);
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Workflow step failed';
-      const failureOutput = {
-        steps: results,
-        finalState: state,
-        error: message,
-      };
-      await this.infra.completeExecution(executionId, 'failed', failureOutput);
-      await publishEvent(
-        this.infra,
-        createEvent({
-          type: 'workflow.failed',
-          source: this.source,
           tenantId: request.workflow.tenantId,
           correlationId: request.workflow.correlationId,
-          workflowId: request.workflow.id,
-          executionId,
-          payload: failureOutput,
-        }),
-      );
-      throw error;
-    }
+          input: request.input,
+        });
 
-    const output = {
-      steps: results,
-      totalCostUsd: results.reduce((sum, item) => sum + item.costUsd, 0),
-      totalTokens: results.reduce((sum, item) => sum + item.tokens, 0),
-      finalState: state,
-    };
+        await publishEvent(
+          this.infra,
+          createEvent({
+            type: 'workflow.started',
+            source: this.source,
+            tenantId: request.workflow.tenantId,
+            correlationId: request.workflow.correlationId,
+            workflowId: request.workflow.id,
+            executionId,
+            spanId: workflowSpanId,
+            payload: {
+              workflow: request.workflow.name,
+              initiatedBy: request.initiatedBy,
+            },
+          }),
+        );
 
-    await this.infra.completeExecution(executionId, 'completed', output);
-    await publishEvent(
-      this.infra,
-      createEvent({
-        type: 'workflow.completed',
-        source: this.source,
-        tenantId: request.workflow.tenantId,
-        correlationId: request.workflow.correlationId,
-        workflowId: request.workflow.id,
-        executionId,
-        payload: output,
-      }),
+        const state: Record<string, unknown> = { ...request.input };
+        const retryState: Record<string, unknown> = {};
+        const results: StepResult[] = [];
+
+        try {
+          for (const [index, step] of request.workflow.steps.entries()) {
+            await withRuntimeSpan(
+              `workflow.step.${step.kind}`,
+              {
+                attributes: {
+                  'pulsestack.execution.id': executionId,
+                  'pulsestack.workflow.id': request.workflow.id,
+                  'pulsestack.step.id': step.id,
+                  'pulsestack.step.name': step.name,
+                  'pulsestack.step.kind': step.kind,
+                  'pulsestack.step.index': index,
+                  'pulsestack.step.depends_on': step.dependsOn.join(','),
+                  'pulsestack.state.keys': Object.keys(state).join(','),
+                  'pulsestack.step.retry.max_attempts': normalizeRetryPolicy(
+                    step.retry,
+                  ).maxAttempts,
+                },
+              },
+              async (otelStepSpan) => {
+                const span = await this.startSpan({
+                  traceId,
+                  executionId,
+                  workflowId: request.workflow.id,
+                  parentSpanId: workflowSpanId,
+                  step,
+                  state,
+                });
+
+                let result: StepResult;
+                try {
+                  result = await this.runStepWithRetry({
+                    step,
+                    state,
+                    traceId,
+                    executionId,
+                    workflowId: request.workflow.id,
+                    tenantId: request.workflow.tenantId,
+                    correlationId: request.workflow.correlationId,
+                    spanId: span.spanId,
+                  });
+                } catch (error) {
+                  if (error instanceof StepRetryExhaustedError) {
+                    retryState[error.stepId] = error.retry;
+                    Object.assign(state, { __retry: retryState });
+                    otelStepSpan.setAttributes({
+                      'pulsestack.step.retry.exhausted': true,
+                      'pulsestack.step.retry.max_attempts':
+                        error.retry.maxAttempts,
+                    });
+                  }
+                  await this.failSpan(span, error);
+                  throw error;
+                }
+
+                retryState[step.id] = result.retry;
+                otelStepSpan.setAttributes({
+                  'pulsestack.step.cost_usd': result.costUsd,
+                  'pulsestack.step.tokens': result.tokens,
+                  'pulsestack.step.attempts': result.attempts,
+                  'pulsestack.step.retry.exhausted': result.retry.exhausted,
+                });
+                Object.assign(state, {
+                  [step.id]: result.output,
+                  __retry: retryState,
+                });
+                results.push(result);
+
+                await this.snapshot({
+                  id: createId('snap'),
+                  executionId,
+                  workflowId: request.workflow.id,
+                  sequence: index,
+                  state: structuredClone(state),
+                  sideEffects: [
+                    {
+                      type: step.kind,
+                      key: step.id,
+                      response: result.output,
+                    },
+                  ],
+                  createdAt: new Date().toISOString(),
+                });
+
+                await this.finishSpan(span, result);
+              },
+            );
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Workflow step failed';
+          const failureOutput = {
+            steps: results,
+            finalState: state,
+            error: message,
+          };
+          workflowSpan.setAttributes({
+            'pulsestack.workflow.failed': true,
+            'pulsestack.workflow.error': message,
+          });
+          await this.infra.completeExecution(
+            executionId,
+            'failed',
+            failureOutput,
+          );
+          await publishEvent(
+            this.infra,
+            createEvent({
+              type: 'workflow.failed',
+              source: this.source,
+              tenantId: request.workflow.tenantId,
+              correlationId: request.workflow.correlationId,
+              workflowId: request.workflow.id,
+              executionId,
+              spanId: workflowSpanId,
+              payload: failureOutput,
+            }),
+          );
+          throw error;
+        }
+
+        const output = {
+          steps: results,
+          totalCostUsd: results.reduce((sum, item) => sum + item.costUsd, 0),
+          totalTokens: results.reduce((sum, item) => sum + item.tokens, 0),
+          finalState: state,
+        };
+
+        workflowSpan.setAttributes({
+          'pulsestack.workflow.total_cost_usd': output.totalCostUsd,
+          'pulsestack.workflow.total_tokens': output.totalTokens,
+        });
+        await this.infra.completeExecution(executionId, 'completed', output);
+        await publishEvent(
+          this.infra,
+          createEvent({
+            type: 'workflow.completed',
+            source: this.source,
+            tenantId: request.workflow.tenantId,
+            correlationId: request.workflow.correlationId,
+            workflowId: request.workflow.id,
+            executionId,
+            spanId: workflowSpanId,
+            payload: output,
+          }),
+        );
+
+        return { executionId, traceId, output };
+      },
     );
-
-    return { executionId, traceId, output };
   }
 
   private async runStepWithRetry(args: {
@@ -342,12 +413,13 @@ export class WorkflowRuntime {
     traceId: string;
     executionId: string;
     workflowId: string;
+    parentSpanId?: string;
     step: WorkflowStep;
     state: Record<string, unknown>;
   }) {
     const span = traceSpanSchema.parse({
       spanId: createId('span'),
-      parentSpanId: null,
+      parentSpanId: args.parentSpanId ?? null,
       traceId: args.traceId,
       executionId: args.executionId,
       workflowId: args.workflowId,
@@ -374,6 +446,7 @@ export class WorkflowRuntime {
         workflowId: args.workflowId,
         executionId: args.executionId,
         spanId: span.spanId,
+        parentSpanId: span.parentSpanId ?? undefined,
         payload: span.attributes,
       }),
     );
