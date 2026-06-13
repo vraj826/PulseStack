@@ -147,6 +147,7 @@ export class WorkflowRuntime {
                   executionId,
                   workflowId: request.workflow.id,
                   tenantId: request.workflow.tenantId,
+                  correlationId: request.workflow.correlationId, 
                   correlationId: request.workflow.correlationId,
                   executionContext,
                   parentSpanId: workflowSpanId,
